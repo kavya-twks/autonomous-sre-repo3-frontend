@@ -120,17 +120,26 @@ jobs:
       - name: Build and push Docker image
         id: push
         run: |
+          set -o pipefail
+
           ECR_URL="${{ needs.dependency-prediction.outputs.ecr_url }}"
           TAG="${{ steps.meta.outputs.tag }}"
           IMAGE_URI="${ECR_URL}:${TAG}"
 
-          docker build -t "$IMAGE_URI" .
+          docker build -t "$IMAGE_URI" . 2>&1 | tee build.log
           docker tag "$IMAGE_URI" "${ECR_URL}:latest"
           docker push "$IMAGE_URI"
           docker push "${ECR_URL}:latest"
 
           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
           echo "Built and pushed: $IMAGE_URI"
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-build-logs
+          path: build.log
 
   # ── Stage 3: Self-Heal on build failure ───────────────────────────────────
   self-heal-build:
@@ -150,13 +159,13 @@ jobs:
         run: |
           DOCKERFILE=$(cat Dockerfile 2>/dev/null || echo "not found")
           PKGJSON=$(cat package.json 2>/dev/null || echo "not found")
+          BUILD_LOG=$(cat build.log 2>/dev/null || echo "No logs")
 
           python3 - <<'PYEOF'
           import os, json, urllib.request, glob
 
           dockerfile = open("Dockerfile").read() if os.path.exists("Dockerfile") else "not found"
           pkgjson = open("package.json").read() if os.path.exists("package.json") else "not found"
-
           prompt = f"""Fix a Docker build failure for a Next.js app on ECS.
           Dockerfile:
           {dockerfile}
@@ -213,6 +222,8 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update ECS service
